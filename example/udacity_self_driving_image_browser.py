@@ -92,6 +92,69 @@ def draw_image_with_boxes(image, boxes, header, description):
     st.image(image_with_boxes.astype(np.uint8), use_column_width=True)
 
 
+def yolo_v3(image, confidence_threshold, overlap_threshold):
+    @st.cache(allow_output_mutation=True)
+    def load_network(config_path, weights_path):
+        net = cv2.dnn.readNetFromDarknet(config_path, weights_path)
+        output_layer_names = net.getLayerNames()
+        output_layer_names = [output_layer_names[i[0] - 1] for i in net.getUnconnectedOutLayers()]
+        return net, output_layer_names
+
+    net, output_layer_names = load_network('yolov3.cfg', 'yolov3.weights')
+
+    blob = cv2.dnn.blobFromImage(image, 1/255.0, (416, 416), swapRB=True, crop=False)
+    net.setInput(blob)
+    layer_outputs = net.forward(output_layer_names)
+
+    bboxes, confidences, class_ids = [], [], []
+
+    H, W = image.shape[:2]
+    for output in layer_outputs:
+        for detection in output:
+            scores = detection[5:]
+            class_id = np.argmax(scores)
+            confidence = scores[class_id]
+
+            if confidence > confidence_threshold:
+                box = detection[:4] * np.array([W, H, H, W])
+                centerX, centerY, width, height = box.astype("int")
+                x, y = int(centerX - (width/2)), int(centerY - (height/2))
+                bboxes.append([x, y, int(width), int(height)])
+                confidences.append(float(confidence))
+                class_ids.append(class_id)
+    indices = cv2.dnn.NMSBoxes(bboxes, confidences, confidence_threshold, overlap_threshold)
+
+    UDACITY_LABELS = {
+        0: 'pedestrian',
+        1: 'biker',
+        2: 'car',
+        3: 'biker',
+        5: 'truck',
+        7: 'truck',
+        9: 'trafficLight'
+    }
+    xmin, xmax, ymin, ymax, labels = [], [], [], [], []
+    if len(indices) > 0:
+        # loop over the indexes we are keeping
+        for i in indices.flatten():
+            label = UDACITY_LABELS.get(class_ids[i], None)
+            if label is None:
+                continue
+
+            # extract the bounding box coordinates
+            x, y, w, h = bboxes[i][0], bboxes[i][1], bboxes[i][2], bboxes[i][3]
+
+            xmin.append(x)
+            ymin.append(y)
+            xmax.append(x+w)
+            ymax.append(y+h)
+            labels.append(label)
+
+    boxes = pd.DataFrame({"xmin": xmin, "ymin": ymin, "xmax": xmax, "ymax": ymax, "labels": labels})
+    return boxes[["xmin", "ymin", "xmax", "ymax", "labels"]]
+
+
+
 def run_app():
 
     @st.cache
@@ -112,6 +175,15 @@ def run_app():
 
         return summary
 
+    st.write("""
+    This sample shows how to build a simple image and model prediction browser
+    - Use cv2 load yolov3
+    - render image on the UI
+    - The use of siderbar and slider is good
+    
+    It's more like a web application.
+    """)
+
     metadata = load_metadata(os.path.join(DATA_URL_ROOT, 'labels.csv.gz'))
     summary = create_summary(metadata)
     selected_frame_index, selected_frame = frame_selector_ui(summary)
@@ -127,6 +199,11 @@ def run_app():
 
     bboxes = metadata[metadata.frame == selected_frame].drop(columns=['frame'])
     draw_image_with_boxes(image, bboxes, "Ground Truth", f"Human Annotated Image (frame: {selected_frame_index})")
+
+    yolo_bboxes = yolo_v3(image, confidence_threshold, overlap_threshold)
+
+    draw_image_with_boxes(image, yolo_bboxes, "Yolo Detection", f"Yolo detection image (frame: {selected_frame_index})")
+
 
 if __name__ == '__main__':
     main()
